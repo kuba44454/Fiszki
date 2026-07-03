@@ -18,7 +18,7 @@ def load_data():
 
 df = load_data()
 
-# Inicjalizacja bazy błędnych słówek w pamięci sesji (jeśli nie istnieje)
+# Inicjalizacja bazy błędnych słówek w pamięci sesji
 if "failed_cards" not in st.session_state:
     st.session_state.failed_cards = set()
 
@@ -34,7 +34,6 @@ swap_sides = st.sidebar.checkbox(
     help="Wyświetla polskie tłumaczenie jako pytanie."
 )
 
-# Nowa opcja: Tryb powtórek błędów
 only_errors = st.sidebar.checkbox(
     "❌ Ucz się tylko błędów", 
     value=False, 
@@ -52,7 +51,7 @@ if mode == "Import masowy CSV":
     if st.button("Zapisz do Google Sheets", type="primary"):
         try:
             new_data = pd.read_csv(io.StringIO(csv_input.strip()))
-            required_cols = ["Jezyk", "Kategoria", "Front, Back, Przyklad"]
+            required_cols = ["Jezyk", "Kategoria", "Front", "Back", "Przyklad"]
             
             if not all(col in new_data.columns for col in required_cols):
                 st.error("Błąd: CSV musi zawierać kolumny: Jezyk, Kategoria, Front, Back, Przyklad")
@@ -85,12 +84,9 @@ else:
         
         final_df = lang_filtered_df[lang_filtered_df["Kategoria"] == selected_category].reset_index(drop=True)
         
-        # 2. APLIKOWANIE FILTRU BŁĘDÓW (jeśli włączony)
         if only_errors:
-            # Filtrujemy tylko wiersze, których unikalny klucz (Front) jest w secie failed_cards
             final_df = final_df[final_df["Front"].isin(st.session_state.failed_cards)].reset_index(drop=True)
         
-        # Wyświetlanie stanu licznika błędów w sidebarze
         st.sidebar.info(f"Wszystkich błędów w pamięci: {len(st.session_state.failed_cards)}")
 
         if final_df.empty:
@@ -99,9 +95,7 @@ else:
             else:
                 st.info("Brak fiszek spełniających kryteria.")
         else:
-            st.write(f"Dostępnych fiszek w tym trybie: {len(final_df)}")
-            
-            # Reset indeksu przy zmianie trybu, języka lub kategorii
+            # Reset indeksu przy zmianie trybu sesji
             state_key = f"state_{selected_lang}_{selected_category}_{only_errors}"
             if "current_state_key" not in st.session_state or st.session_state.current_state_key != state_key:
                 st.session_state.flashcard_index = 0
@@ -113,10 +107,31 @@ else:
                 idx = 0
                 st.session_state.flashcard_index = 0
 
-            current_card = final_df.iloc[idx]
-            card_id = current_card['Front']  # Nasz unikalny identyfikator fiszki
+            # --- NOWOŚĆ: MODUŁ "ZACZNIJ OD ŚRODKA" (LISTA SŁÓWEK) ---
+            # Budujemy ładne opisy pozycji w zależności od tego, czy użytkownik odwrócił fiszki czy nie
+            if swap_sides:
+                word_options = [f"{i+1}. {row['Back']} → {row['Front']}" for i, row in final_df.iterrows()]
+            else:
+                word_options = [f"{i+1}. {row['Front']} → {row['Back']}" for i, row in final_df.iterrows()]
             
-            # Zamiana stron
+            chosen_word_str = st.selectbox(
+                f"📋 Spis słówek ({len(final_df)} pozycji) - możesz skoczyć do dowolnego:", 
+                word_options, 
+                index=idx
+            )
+            
+            # Sprawdzenie czy użytkownik ręcznie zmienił pozycję na liście rozwijanej
+            chosen_idx = word_options.index(chosen_word_str)
+            if chosen_idx != idx:
+                st.session_state.flashcard_index = chosen_idx
+                st.session_state.show_back = False
+                st.rerun()
+            # --------------------------------------------------------
+
+            # Pobranie aktualnej karty po ewentualnym skoku
+            current_card = final_df.iloc[st.session_state.flashcard_index]
+            card_id = current_card['Front']
+            
             card_front = current_card['Back'] if swap_sides else current_card['Front']
             card_back = current_card['Front'] if swap_sides else current_card['Back']
             
@@ -133,8 +148,6 @@ else:
             
             front_extra_html = example_html if not swap_sides else ""
             back_extra_html = example_html if swap_sides else ""
-
-            # Sprawdzenie czy fiszka jest aktualnie na liście błędów (żeby wyświetlić małą czerwoną kropkę)
             is_failed = "⚠️ Fiszka w puli powtórek" if card_id in st.session_state.failed_cards else ""
 
             # Renderowanie FRONTU
@@ -157,14 +170,14 @@ else:
                 </div>
                 """, unsafe_allow_html=True)
             
-            # --- SYSTEM OCENIANIA (Nowe Przyciski) ---
+            # System oceniania
             st.write("Oceń swoją wiedzę dla tej karty:")
             col_bad, col_good = st.columns(2)
             
             with col_bad:
                 if st.button("❌ Nie umiem (Dodaj do powtórek)", use_container_width=True, type="secondary"):
                     st.session_state.failed_cards.add(card_id)
-                    st.session_state.flashcard_index = (idx + 1) % len(final_df)
+                    st.session_state.flashcard_index = (st.session_state.flashcard_index + 1) % len(final_df)
                     st.session_state.show_back = False
                     st.rerun()
                     
@@ -172,12 +185,12 @@ else:
                 if st.button("✅ Umiem (Usuń z powtórek)", use_container_width=True, type="primary"):
                     if card_id in st.session_state.failed_cards:
                         st.session_state.failed_cards.remove(card_id)
-                    st.session_state.flashcard_index = (idx + 1) % len(final_df)
+                    st.session_state.flashcard_index = (st.session_state.flashcard_index + 1) % len(final_df)
                     st.session_state.show_back = False
                     st.rerun()
 
             st.markdown("---")
-            # Klasyczne kontrolery nawigacji
+            # Kontrolery nawigacji
             col1, col2, col3 = st.columns(3)
             with col1:
                 if st.button("👁️ Pokaż / Ukryj", use_container_width=True):
@@ -185,7 +198,7 @@ else:
                     st.rerun()
             with col2:
                 if st.button("➡️ Pomiń (Następna)", use_container_width=True):
-                    st.session_state.flashcard_index = (idx + 1) % len(final_df)
+                    st.session_state.flashcard_index = (st.session_state.flashcard_index + 1) % len(final_df)
                     st.session_state.show_back = False
                     st.rerun()
             with col3:
