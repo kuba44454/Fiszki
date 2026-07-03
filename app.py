@@ -10,14 +10,11 @@ st.set_page_config(page_title="Fiszki Navigator", layout="centered")
 # Inicjalizacja połączenia z Google Sheets
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Funkcja do bezpiecznego pobierania danych
 def load_data():
     try:
-        # ttl=0 wymusza pobranie świeżych danych przy każdym przeładowaniu
         return conn.read(ttl=0)
     except Exception:
-        # Jeśli arkusz jest pusty, tworzymy domyślny DataFrame
-        return pd.DataFrame(columns=["Kategoria", "Front", "Back"])
+        return pd.DataFrame(columns=["Jezyk", "Kategoria", "Front", "Back", "Przyklad"])
 
 df = load_data()
 
@@ -27,29 +24,25 @@ mode = st.sidebar.radio("Nawigacja", ["Nauka", "Import masowy CSV"])
 # --- MODUŁ: IMPORT MASOWY CSV ---
 if mode == "Import masowy CSV":
     st.header("📥 Masowy import fiszek z CSV")
-    st.write("Wklej poniżej wygenerowany przez LLM tekst CSV. Wymagany format: `Kategoria,Front,Back` z nagłówkiem.")
+    st.write("Wklej tekst CSV. Wymagany format: `Jezyk,Kategoria,Front,Back,Przyklad` z nagłówkiem.")
     
     # Przykładowy szablon dla użytkownika
-    demo_csv = "Kategoria,Front,Back\nNawigacja,Der Pegel,Poziom wody\nNawigacja,Die Schleuse,Śluza"
+    demo_csv = "Jezyk,Kategoria,Front,Back,Przyklad\nNiemiecki,Nawigacja,Der Pegel,Stan wody,Der Pegel ist heute sehr niedrig.\nNiderlandzki,Sluzy,De Sluis,Śluza,We varen de sluis binnen."
     csv_input = st.text_area("Dane CSV:", value=demo_csv, height=250)
     
     if st.button("Zapisz do Google Sheets", type="primary"):
         try:
-            # Parsowanie tekstu do DataFrame
             new_data = pd.read_csv(io.StringIO(csv_input.strip()))
+            required_cols = ["Jezyk", "Kategoria", "Front", "Back", "Przyklad"]
             
-            # Walidacja kolumn
-            required_cols = ["Kategoria", "Front", "Back"]
             if not all(col in new_data.columns for col in required_cols):
-                st.error("Błąd: CSV musi zawierać kolumny: Kategoria, Front, Back")
+                st.error("Błąd: CSV musi zawierać kolumny: Jezyk, Kategoria, Front, Back, Przyklad")
             else:
-                # Łączenie starych danych z nowymi
                 if df.empty or df.dropna(how='all').empty:
                     updated_df = new_data
                 else:
                     updated_df = pd.concat([df, new_data], ignore_index=True)
                 
-                # Aktualizacja bazy w chmurze Google
                 conn.update(data=updated_df)
                 st.success(f"Pomyślnie zaimportowano {len(new_data)} nowych fiszek!")
                 st.rerun()
@@ -61,68 +54,82 @@ else:
     st.header("🗂️ Panel Nauki")
     
     if df.empty or df.dropna(how='all').empty:
-        st.warning("Baza fiszek jest pusta. Przejdź do zakładki 'Import masowy CSV', aby dodać pierwsze pozycje.")
+        st.warning("Baza fiszek jest pusta. Przejdź do zakładki 'Import masowy CSV'.")
     else:
-        # Filtrowanie unikalnych kategorii
-        categories = df["Kategoria"].dropna().unique().tolist()
+        # 1. Filtrowanie Języka w Sidebarze
+        languages = df["Jezyk"].dropna().unique().tolist()
+        selected_lang = st.sidebar.selectbox("Wybierz język:", languages)
+        
+        # Odfiltrowanie danych tylko dla wybranego języka
+        lang_filtered_df = df[df["Jezyk"] == selected_lang]
+        
+        # 2. Dynamiczne wyciąganie kategorii dla wybranego języka
+        categories = lang_filtered_df["Kategoria"].dropna().unique().tolist()
         selected_category = st.selectbox("Wybierz kategorię do nauki:", categories)
         
-        # Filtrowanie fiszek z wybranej kategorii
-        filtered_df = df[df["Kategoria"] == selected_category].reset_index(drop=True)
+        # Ostateczne odfiltrowanie danych (Język + Kategoria)
+        final_df = lang_filtered_df[lang_filtered_df["Kategoria"] == selected_category].reset_index(drop=True)
         
-        if filtered_df.empty:
-            st.info("Brak fiszek w tej kategorii.")
+        if final_df.empty:
+            st.info("Brak fiszek spełniających kryteria.")
         else:
-            st.write(f"Dostępnych fiszek w kategorii: {len(filtered_df)}")
+            st.write(f"Dostępnych fiszek: {len(final_df)}")
             
-            # Zarządzanie indeksem aktywnej fiszki w stanie sesji Streamlit
-            if "flashcard_index" not in st.session_state or st.session_state.get("prev_category") != selected_category:
+            # Reset indeksu przy zmianie języka lub kategorii
+            state_key = f"prev_state_{selected_lang}_{selected_category}"
+            if "current_state_key" not in st.session_state or st.session_state.current_state_key != state_key:
                 st.session_state.flashcard_index = 0
-                st.session_state.prev_category = selected_category
+                st.session_state.current_state_key = state_key
                 st.session_state.show_back = False
 
             idx = st.session_state.flashcard_index
             
-            # Zabezpieczenie przed wyjściem poza indeks po usunięciu danych
-            if idx >= len(filtered_df):
+            if idx >= len(final_df):
                 idx = 0
                 st.session_state.flashcard_index = 0
 
-            # Renderowanie karty (Front)
-            current_card = filtered_df.iloc[idx]
+            current_card = final_df.iloc[idx]
             
+            # Wyświetlanie przykładu (obsługa pustych komórek w pandas)
+            example_sentence = current_card['Przyklad'] if pd.notna(current_card['Przyklad']) else "Brak zdania przykładowego."
+            
+            # Renderowanie FRONTU wraz ze zdaniem przykładowym
             st.markdown(f"""
             <div style="background-color: #1E1E1E; padding: 40px; border-radius: 10px; border: 1px solid #444; text-align: center; margin-bottom: 20px;">
-                <span style="color: #888; font-size: 14px;">FRONT</span>
-                <h2 style="color: #FFF; margin-top: 10px;">{current_card['Front']}</h2>
+                <span style="color: #888; font-size: 13px; tracking-spacing: 1px;">FRONT • {selected_lang.upper()}</span>
+                <h2 style="color: #FFF; margin-top: 15px; margin-bottom: 25px; font-size: 32px;">{current_card['Front']}</h2>
+                <div style="border-top: 1px dashed #444; padding-top: 20px; margin-top: 20px;">
+                    <span style="color: #666; font-size: 12px; display: block; margin-bottom: 5px;">Zastosowanie w zdaniu:</span>
+                    <p style="color: #CCC; font-style: italic; font-size: 16px; line-height: 1.5;">"{example_sentence}"</p>
+                </div>
             </div>
             """, unsafe_allow_html=True)
             
-            # Renderowanie rewersu (Back) po kliknięciu
+            # Renderowanie REWERSU
             if st.session_state.show_back:
                 st.markdown(f"""
                 <div style="background-color: #2D3748; padding: 40px; border-radius: 10px; border: 1px solid #4A5568; text-align: center; margin-bottom: 20px;">
-                    <span style="color: #CBD5E0; font-size: 14px;">REWERS (TŁUMACZENIE)</span>
-                    <h2 style="color: #63B3ED; margin-top: 10px;">{current_card['Back']}</h2>
+                    <span style="color: #CBD5E0; font-size: 13px;">REWERS (TŁUMACZENIE)</span>
+                    <h2 style="color: #63B3ED; margin-top: 15px; font-size: 30px;">{current_card['Back']}</h2>
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Przyciski sterujące
+            # Kontrolery
             col1, col2, col3 = st.columns(3)
             
             with col1:
-                if st.button("👁️ Pokaż / Ukryj odpowiedź", use_container_width=True):
+                if st.button("👁️ Pokaż / Ukryj", use_container_width=True):
                     st.session_state.show_back = not st.session_state.show_back
                     st.rerun()
                     
             with col2:
-                if st.button("➡️ Następna fiszka", use_container_width=True):
-                    st.session_state.flashcard_index = (idx + 1) % len(filtered_df)
+                if st.button("➡️ Następna", use_container_width=True):
+                    st.session_state.flashcard_index = (idx + 1) % len(final_df)
                     st.session_state.show_back = False
                     st.rerun()
                     
             with col3:
-                if st.button("🎲 Losuj fiszkę", use_container_width=True):
-                    st.session_state.flashcard_index = random.randint(0, len(filtered_df) - 1)
+                if st.button("🎲 Losuj", use_container_width=True):
+                    st.session_state.flashcard_index = random.randint(0, len(final_df) - 1)
                     st.session_state.show_back = False
                     st.rerun()
